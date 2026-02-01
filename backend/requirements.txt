@@ -1,0 +1,39 @@
+# Pocket Planner - Backend Dependencies
+# Python 3.11+
+
+# === Core Framework ===
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+python-multipart>=0.0.9
+
+# === Data Validation ===
+pydantic>=2.0.0
+pydantic-settings>=2.1.0
+
+# === AI & LLM ===
+google-genai>=1.0.0        # Google Gen AI SDK for Gemini
+instructor>=1.0.0           # Structured output from LLMs
+
+# === Agent Framework ===
+langgraph>=0.2.0            # Stateful agent orchestration
+langchain-core>=0.2.0       # Core LangChain types
+
+# === Geometry & Spatial ===
+shapely>=2.0.0              # Polygon operations, collision detection
+networkx>=3.0               # Room graph data structure
+
+# === Utilities ===
+python-dotenv>=1.0.0        # Environment variable management
+pillow>=10.0.0              # Image processing
+httpx>=0.27.0               # Async HTTP client
+
+# === Development ===
+pytest>=8.0.0
+pytest-asyncio>=0.23.0
+black>=24.0.0
+ruff>=0.4.0
+mypy>=1.10.0
+
+# === Optional: For local testing ===
+# jupyter>=1.0.0
+# ipykernel>=6.0.0
