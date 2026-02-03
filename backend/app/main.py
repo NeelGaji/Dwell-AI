@@ -4,12 +4,20 @@ Pocket Planner API
 FastAPI application for the Small Space Optimization Agent.
 """
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from app.config import get_settings
-from app.models.api import HealthResponse
+from app.models.api import HealthResponse, ErrorResponse
 from app.routes import analyze, optimize, render
+from app.core.exceptions import (
+    PocketPlannerError,
+    VisionExtractionError,
+    ConstraintViolationError,
+    RenderingError,
+    InvalidImageError,
+)
 
 
 # Get settings
@@ -50,6 +58,57 @@ app.add_middleware(
 app.include_router(analyze.router, prefix=settings.api_prefix)
 app.include_router(optimize.router, prefix=settings.api_prefix)
 app.include_router(render.router, prefix=settings.api_prefix)
+
+
+# ============ Exception Handlers ============
+
+@app.exception_handler(VisionExtractionError)
+async def vision_extraction_error_handler(request: Request, exc: VisionExtractionError):
+    """Handle vision extraction failures."""
+    return JSONResponse(
+        status_code=422,
+        content={"detail": exc.message, "error_code": exc.error_code}
+    )
+
+
+@app.exception_handler(ConstraintViolationError)
+async def constraint_violation_error_handler(request: Request, exc: ConstraintViolationError):
+    """Handle constraint violations."""
+    return JSONResponse(
+        status_code=400,
+        content={
+            "detail": exc.message,
+            "error_code": exc.error_code,
+            "violations": exc.violations
+        }
+    )
+
+
+@app.exception_handler(RenderingError)
+async def rendering_error_handler(request: Request, exc: RenderingError):
+    """Handle rendering failures."""
+    return JSONResponse(
+        status_code=500,
+        content={"detail": exc.message, "error_code": exc.error_code}
+    )
+
+
+@app.exception_handler(InvalidImageError)
+async def invalid_image_error_handler(request: Request, exc: InvalidImageError):
+    """Handle invalid image data."""
+    return JSONResponse(
+        status_code=400,
+        content={"detail": exc.message, "error_code": exc.error_code}
+    )
+
+
+@app.exception_handler(PocketPlannerError)
+async def pocket_planner_error_handler(request: Request, exc: PocketPlannerError):
+    """Handle generic Pocket Planner errors."""
+    return JSONResponse(
+        status_code=500,
+        content={"detail": exc.message, "error_code": exc.error_code}
+    )
 
 
 # ============ Health Check ============
