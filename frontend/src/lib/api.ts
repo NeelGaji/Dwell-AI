@@ -1,5 +1,7 @@
 /**
  * API Client for Pocket Planner Backend
+ * 
+ * Updated with longer timeouts for layout generation
  */
 
 import axios, { AxiosError } from 'axios';
@@ -18,17 +20,30 @@ import type {
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
+// Standard API client
 const api = axios.create({
     baseURL: `${API_URL}/api/v1`,
     headers: {
         'Content-Type': 'application/json',
     },
-    timeout: 120000, // 120 second timeout for perspective generation
+    timeout: 60000, // 60 second default timeout
+});
+
+// Long-running operations client (for optimize and perspective)
+const longApi = axios.create({
+    baseURL: `${API_URL}/api/v1`,
+    headers: {
+        'Content-Type': 'application/json',
+    },
+    timeout: 180000, // 3 minute timeout for layout generation
 });
 
 // Error handler
 function handleApiError(error: unknown): never {
     if (error instanceof AxiosError) {
+        if (error.code === 'ECONNABORTED') {
+            throw new Error('Request timed out. The server is taking too long to respond.');
+        }
         const message = error.response?.data?.detail || error.message;
         throw new Error(message);
     }
@@ -51,10 +66,11 @@ export async function analyzeRoom(imageBase64: string): Promise<AnalyzeResponse>
 
 /**
  * Optimize room layout while respecting locked objects
+ * Uses longer timeout due to multiple AI operations
  */
 export async function optimizeLayout(request: OptimizeRequest): Promise<OptimizeResponse> {
     try {
-        const response = await api.post<OptimizeResponse>('/optimize', request);
+        const response = await longApi.post<OptimizeResponse>('/optimize', request);
         return response.data;
     } catch (error) {
         handleApiError(error);
@@ -75,10 +91,11 @@ export async function renderLayout(request: RenderRequest): Promise<RenderRespon
 
 /**
  * Generate a photorealistic perspective view of the layout
+ * Uses longer timeout due to image generation
  */
 export async function generatePerspective(request: PerspectiveRequest): Promise<PerspectiveResponse> {
     try {
-        const response = await api.post<PerspectiveResponse>('/render/perspective', request);
+        const response = await longApi.post<PerspectiveResponse>('/render/perspective', request);
         return response.data;
     } catch (error) {
         handleApiError(error);
@@ -90,7 +107,7 @@ export async function generatePerspective(request: PerspectiveRequest): Promise<
  */
 export async function chatEdit(request: ChatEditRequest): Promise<ChatEditResponse> {
     try {
-        const response = await api.post<ChatEditResponse>('/chat/edit', request);
+        const response = await longApi.post<ChatEditResponse>('/chat/edit', request);
         return response.data;
     } catch (error) {
         handleApiError(error);
@@ -102,10 +119,9 @@ export async function chatEdit(request: ChatEditRequest): Promise<ChatEditRespon
  */
 export async function checkHealth(): Promise<{ status: string; version: string }> {
     try {
-        const response = await axios.get(`${API_URL}/health`);
+        const response = await axios.get(`${API_URL}/health`, { timeout: 5000 });
         return response.data;
     } catch (error) {
         handleApiError(error);
     }
 }
-

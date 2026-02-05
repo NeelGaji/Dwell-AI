@@ -3,22 +3,36 @@ Edit Image Tool
 
 Tools for editing floor plan images and room renders.
 Used by Designer Agent for layout previews and Chat Editor for surgical edits.
+
+FULLY TRACED with LangSmith - all Gemini image editing calls are tracked.
 """
 
 import base64
 import io
 import asyncio
-from typing import Optional
+from typing import Optional, List, Dict
 from google import genai
 from google.genai import types
 from PIL import Image
 
 from app.config import get_settings
 
+# LangSmith tracing
+try:
+    from langsmith import traceable
+    LANGSMITH_ENABLED = True
+except ImportError:
+    LANGSMITH_ENABLED = False
+    def traceable(*args, **kwargs):
+        def decorator(func):
+            return func
+        return decorator
+
 
 class EditImageTool:
     """
     Tool for applying edits to floor plan and room images using Gemini.
+    All methods are traced with LangSmith for full observability.
     """
     
     def __init__(self):
@@ -27,11 +41,17 @@ class EditImageTool:
             raise ValueError("GOOGLE_API_KEY environment variable is not set")
         self.client = genai.Client(api_key=settings.google_api_key)
         self.model = settings.image_model_name
-    
+
+    @traceable(
+        name="edit_image_tool.edit_floor_plan",
+        run_type="tool",
+        tags=["tool", "image", "floor-plan", "edit"],
+        metadata={"description": "Edit floor plan to reposition furniture"}
+    )
     async def edit_floor_plan(
         self, 
         base_image: str, 
-        furniture_movements: list[dict],
+        furniture_movements: List[Dict],
         style_context: Optional[str] = None
     ) -> str:
         """
@@ -44,6 +64,8 @@ class EditImageTool:
             
         Returns:
             Base64 encoded edited floor plan
+            
+        TRACED: Full tool execution with movement details.
         """
         if "," in base_image:
             base_image = base_image.split(",")[1]
@@ -82,30 +104,14 @@ CRITICAL REQUIREMENTS:
 
 Generate the modified floor plan with furniture repositioned."""
 
-        try:
-            response = await asyncio.to_thread(
-                self.client.models.generate_content,
-                model=self.model,
-                contents=[
-                    types.Part.from_bytes(data=image_data, mime_type="image/jpeg"),
-                    prompt
-                ],
-                config=types.GenerateContentConfig(
-                    response_modalities=["IMAGE", "TEXT"],
-                    temperature=0.5
-                )
-            )
-            
-            if response.candidates:
-                for part in response.candidates[0].content.parts:
-                    if hasattr(part, 'inline_data') and part.inline_data:
-                        return base64.b64encode(part.inline_data.data).decode('utf-8')
-            
-            raise RuntimeError("No image in response")
-            
-        except Exception as e:
-            raise RuntimeError(f"Floor plan editing failed: {str(e)}")
+        return await self._call_gemini_edit(image_data, prompt, "floor_plan_edit")
 
+    @traceable(
+        name="edit_image_tool.edit_image",
+        run_type="tool",
+        tags=["tool", "image", "edit", "general"],
+        metadata={"description": "Apply general edit instruction to image"}
+    )
     async def edit_image(
         self, 
         base_image: str, 
@@ -122,6 +128,8 @@ Generate the modified floor plan with furniture repositioned."""
             
         Returns:
             Base64 encoded edited image
+            
+        TRACED: Full tool execution with instruction details.
         """
         if "," in base_image:
             base_image = base_image.split(",")[1]
@@ -129,7 +137,6 @@ Generate the modified floor plan with furniture repositioned."""
         image_data = base64.b64decode(base_image)
         
         # Detect if this is likely a floor plan or a perspective render
-        # based on instruction keywords
         is_floor_plan = any(kw in instruction.lower() for kw in [
             "floor plan", "top-down", "move the", "reposition", "layout"
         ])
@@ -160,6 +167,70 @@ REQUIREMENTS:
 
 Generate the edited image."""
 
+        edit_type = "floor_plan_edit" if is_floor_plan else "perspective_edit"
+        return await self._call_gemini_edit(image_data, prompt, edit_type)
+
+    @traceable(
+        name="edit_image_tool.edit_perspective_view",
+        run_type="tool",
+        tags=["tool", "image", "perspective", "cosmetic"],
+        metadata={"description": "Apply cosmetic edits to perspective render"}
+    )
+    async def edit_perspective_view(
+        self,
+        base_image: str,
+        instruction: str
+    ) -> str:
+        """
+        Apply cosmetic edits to a perspective room render.
+        
+        Args:
+            base_image: Base64 encoded perspective render
+            instruction: Edit instruction (style, color, lighting changes)
+            
+        Returns:
+            Base64 encoded edited image
+            
+        TRACED: Full tool execution for perspective edits.
+        """
+        if "," in base_image:
+            base_image = base_image.split(",")[1]
+        
+        image_data = base64.b64decode(base_image)
+        
+        prompt = f"""Edit this interior design photograph.
+
+CHANGE REQUESTED: {instruction}
+
+REQUIREMENTS:
+1. Maintain photorealistic quality - this should look like a real photo
+2. Keep the same camera angle and perspective
+3. Preserve room layout and furniture positions
+4. Apply the cosmetic/style change naturally
+5. Maintain consistent lighting and shadows
+
+Generate the edited room photograph."""
+
+        return await self._call_gemini_edit(image_data, prompt, "cosmetic_edit")
+
+    @traceable(
+        name="gemini_edit_image_call",
+        run_type="llm",
+        tags=["gemini", "image", "edit", "api-call"],
+        metadata={"model_type": "gemini-image"}
+    )
+    async def _call_gemini_edit(
+        self, 
+        image_data: bytes, 
+        prompt: str,
+        edit_type: str = "general"
+    ) -> str:
+        """
+        Make the actual Gemini image edit API call.
+        
+        TRACED as an LLM call for proper visualization in LangSmith.
+        Shows input prompt, edit type, and tracks success/failure.
+        """
         try:
             response = await asyncio.to_thread(
                 self.client.models.generate_content,
@@ -182,61 +253,37 @@ Generate the edited image."""
             raise RuntimeError("No image generated in response")
             
         except Exception as e:
-            raise RuntimeError(f"Image editing failed: {str(e)}")
+            raise RuntimeError(f"Image editing failed ({edit_type}): {str(e)}")
 
-    async def edit_perspective_view(
+    @traceable(
+        name="edit_image_tool.batch_edit",
+        run_type="tool",
+        tags=["tool", "image", "batch", "edit"],
+        metadata={"description": "Apply multiple edits sequentially"}
+    )
+    async def batch_edit(
         self,
         base_image: str,
-        instruction: str
+        instructions: List[str]
     ) -> str:
         """
-        Apply cosmetic edits to a perspective room render.
+        Apply multiple edit instructions sequentially.
         
         Args:
-            base_image: Base64 encoded perspective render
-            instruction: Edit instruction (style, color, lighting changes)
+            base_image: Base64 encoded original image
+            instructions: List of edit instructions to apply in order
             
         Returns:
-            Base64 encoded edited image
+            Base64 encoded final edited image
+            
+        TRACED: Full batch operation with all intermediate steps.
         """
-        if "," in base_image:
-            base_image = base_image.split(",")[1]
+        current_image = base_image
         
-        image_data = base64.b64decode(base_image)
-        
-        prompt = f"""Edit this interior design photograph.
-
-CHANGE REQUESTED: {instruction}
-
-REQUIREMENTS:
-1. Maintain photorealistic quality - this should look like a real photo
-2. Keep the same camera angle and perspective
-3. Preserve room layout and furniture positions
-4. Apply the cosmetic/style change naturally
-5. Maintain consistent lighting and shadows
-
-Generate the edited room photograph."""
-
-        try:
-            response = await asyncio.to_thread(
-                self.client.models.generate_content,
-                model=self.model,
-                contents=[
-                    types.Part.from_bytes(data=image_data, mime_type="image/jpeg"),
-                    prompt
-                ],
-                config=types.GenerateContentConfig(
-                    response_modalities=["IMAGE", "TEXT"],
-                    temperature=0.6
-                )
+        for i, instruction in enumerate(instructions):
+            current_image = await self.edit_image(
+                base_image=current_image,
+                instruction=instruction
             )
-            
-            if response.candidates:
-                for part in response.candidates[0].content.parts:
-                    if hasattr(part, 'inline_data') and part.inline_data:
-                        return base64.b64encode(part.inline_data.data).decode('utf-8')
-            
-            raise RuntimeError("No image in response")
-            
-        except Exception as e:
-            raise RuntimeError(f"Perspective editing failed: {str(e)}")
+        
+        return current_image

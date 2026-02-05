@@ -37,11 +37,10 @@ class Settings(BaseSettings):
     # LangSmith Tracing
     langchain_tracing_v2: bool = True
     langchain_api_key: str = ""
-    langchain_project: str = "pocket-planner"
+    langchain_project: str = "my first project"  # Your project name
     langchain_endpoint: str = "https://api.smith.langchain.com"
     
     class Config:
-        # Search both current dir and parent dir for .env
         env_file = (".env", "../.env", "../../.env")
         env_file_encoding = "utf-8"
         extra = "ignore"
@@ -53,21 +52,49 @@ def get_settings() -> Settings:
     return Settings()
 
 
-def setup_langsmith():
+def setup_langsmith() -> bool:
     """
     Setup LangSmith tracing environment variables.
     
     Call this at application startup to enable tracing.
+    Returns True if tracing is enabled, False otherwise.
     """
     settings = get_settings()
     
     if settings.langchain_api_key and settings.langchain_tracing_v2:
+        # Set environment variables for LangSmith
         os.environ["LANGCHAIN_TRACING_V2"] = "true"
         os.environ["LANGCHAIN_API_KEY"] = settings.langchain_api_key
         os.environ["LANGCHAIN_PROJECT"] = settings.langchain_project
         os.environ["LANGCHAIN_ENDPOINT"] = settings.langchain_endpoint
-        print(f"✅ LangSmith tracing enabled for project: {settings.langchain_project}")
+        
+        print(f"✅ LangSmith tracing enabled!")
+        print(f"   Project: {settings.langchain_project}")
+        print(f"   Endpoint: {settings.langchain_endpoint}")
         return True
     else:
-        print("⚠️ LangSmith tracing not configured (set LANGCHAIN_API_KEY)")
+        print("⚠️  LangSmith tracing NOT configured")
+        print("   Set LANGCHAIN_API_KEY in your .env file")
+        print("   Get your key at: https://smith.langchain.com -> Settings -> API Keys")
         return False
+
+
+def get_langsmith_client():
+    """
+    Get a LangSmith client for manual tracing.
+    Returns None if tracing is not configured.
+    """
+    settings = get_settings()
+    
+    if not settings.langchain_api_key:
+        return None
+    
+    try:
+        from langsmith import Client
+        return Client(
+            api_key=settings.langchain_api_key,
+            api_url=settings.langchain_endpoint
+        )
+    except ImportError:
+        print("⚠️  langsmith package not installed. Run: pip install langsmith")
+        return None

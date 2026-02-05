@@ -3,7 +3,8 @@ Render Route
 
 POST /render - Generate an edited image with the optimized layout.
 POST /render/perspective - Generate a photorealistic perspective view.
-Uses Gemini image editing to visualize furniture movements.
+
+FULLY TRACED with LangSmith.
 """
 
 from fastapi import APIRouter, HTTPException
@@ -11,13 +12,40 @@ from pydantic import BaseModel
 from typing import List, Optional
 import asyncio
 
-from app.models.api import RenderRequest, RenderResponse
 from app.models.room import RoomObject, RoomDimensions
+from app.models.api import RenderRequest, RenderResponse
 from app.tools.edit_image import EditImageTool
 from app.agents.perspective_node import PerspectiveGenerator
 
+# LangSmith tracing
+try:
+    from langsmith import traceable
+    LANGSMITH_ENABLED = True
+except ImportError:
+    LANGSMITH_ENABLED = False
+    def traceable(*args, **kwargs):
+        def decorator(func):
+            return func
+        return decorator
+
 
 router = APIRouter(prefix="/render", tags=["Rendering"])
+
+
+# === Request/Response Models ===
+
+class RenderRequest(BaseModel):
+    """Request body for render endpoint."""
+    original_image_base64: str
+    final_layout: List[RoomObject]
+    original_layout: List[RoomObject]
+
+
+class RenderResponse(BaseModel):
+    """Response from render endpoint."""
+    image_url: Optional[str] = None
+    image_base64: Optional[str] = None
+    message: str
 
 
 class PerspectiveRequest(BaseModel):
@@ -34,13 +62,18 @@ class PerspectiveResponse(BaseModel):
     message: str
 
 
+# === Endpoints ===
+
 @router.post("/perspective", response_model=PerspectiveResponse)
+@traceable(name="generate_perspective_endpoint", run_type="chain", tags=["api", "render", "perspective"])
 async def generate_perspective(request: PerspectiveRequest) -> PerspectiveResponse:
     """
     Generate a photorealistic perspective view of the room layout.
     
     Uses Gemini image generation to create an eye-level view
     of the room based on the furniture layout.
+    
+    TRACED: Full trace with Gemini image generation details.
     """
     try:
         generator = PerspectiveGenerator()
@@ -65,9 +98,8 @@ async def generate_perspective(request: PerspectiveRequest) -> PerspectiveRespon
         )
 
 
-
-
 @router.post("", response_model=RenderResponse)
+@traceable(name="render_layout_endpoint", run_type="chain", tags=["api", "render", "edit"])
 async def render_layout(request: RenderRequest) -> RenderResponse:
     """
     Generate an edited image showing the optimized layout.
@@ -77,6 +109,8 @@ async def render_layout(request: RenderRequest) -> RenderResponse:
     2. Generates image edit prompts for moved objects
     3. Uses Gemini to edit the image
     4. Returns the rendered result
+    
+    TRACED: Full trace with image edit details.
     """
     # Calculate what changed
     changes = []
@@ -107,20 +141,19 @@ async def render_layout(request: RenderRequest) -> RenderResponse:
         change_descriptions = []
         
         for change in changes:
-            # Create an instruction describing the furniture movement
             instruction = (
                 f"Move the {change['label']} from its current position "
                 f"to the new location. Keep the same furniture style and lighting."
             )
             
-            # Apply edit
             current_image = await editor.edit_image(
                 base_image=current_image,
                 instruction=instruction
             )
             
             change_descriptions.append(
-                f"Moved {change['label']} from ({change['from'][0]}, {change['from'][1]}) to ({change['to'][0]}, {change['to'][1]})"
+                f"Moved {change['label']} from ({change['from'][0]}, {change['from'][1]}) "
+                f"to ({change['to'][0]}, {change['to'][1]})"
             )
         
         return RenderResponse(
@@ -130,7 +163,6 @@ async def render_layout(request: RenderRequest) -> RenderResponse:
         )
         
     except Exception as e:
-        # If Gemini editing fails, return a descriptive message
         change_descriptions = [
             f"Move {c['label']} from ({c['from'][0]}, {c['from'][1]}) to ({c['to'][0]}, {c['to'][1]})"
             for c in changes
@@ -144,12 +176,9 @@ async def render_layout(request: RenderRequest) -> RenderResponse:
 
 
 @router.get("/status/{job_id}")
+@traceable(name="get_render_status", run_type="retriever", tags=["api", "render", "status"])
 async def get_render_status(job_id: str):
-    """
-    Check status of an async render job.
-    
-    For long-running renders, this allows polling for completion.
-    """
+    """Check status of an async render job."""
     return {
         "job_id": job_id,
         "status": "pending",

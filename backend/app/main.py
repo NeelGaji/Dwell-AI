@@ -16,7 +16,7 @@ from fastapi.responses import JSONResponse
 
 from app.config import get_settings, setup_langsmith
 from app.models.api import HealthResponse, ErrorResponse
-from app.routes import analyze, optimize, chat
+from app.routes import analyze, optimize, chat, render
 from app.core.exceptions import (
     PocketPlannerError,
     VisionExtractionError,
@@ -72,7 +72,7 @@ app.add_middleware(
 # Include routers
 app.include_router(analyze.router, prefix=settings.api_prefix)
 app.include_router(optimize.router, prefix=settings.api_prefix)
-
+app.include_router(render.router, prefix=settings.api_prefix)
 app.include_router(chat.router, prefix=settings.api_prefix)
 
 

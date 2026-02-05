@@ -2,7 +2,8 @@
 Chat Route
 
 POST /chat/edit - Process conversational edit commands for room layouts and images.
-Uses the ChatEditor class for natural language command processing.
+
+FULLY TRACED with LangSmith.
 """
 
 from fastapi import APIRouter, HTTPException
@@ -11,6 +12,17 @@ from typing import List, Optional
 
 from app.models.room import RoomObject, RoomDimensions
 from app.agents.chat_editor_node import ChatEditor
+
+# LangSmith tracing
+try:
+    from langsmith import traceable
+    LANGSMITH_ENABLED = True
+except ImportError:
+    LANGSMITH_ENABLED = False
+    def traceable(*args, **kwargs):
+        def decorator(func):
+            return func
+        return decorator
 
 
 router = APIRouter(prefix="/chat", tags=["Chat"])
@@ -34,6 +46,12 @@ class ChatEditResponse(BaseModel):
 
 
 @router.post("/edit", response_model=ChatEditResponse)
+@traceable(
+    name="chat_edit_endpoint", 
+    run_type="chain", 
+    tags=["api", "chat", "edit"],
+    metadata={"description": "Process natural language editing commands"}
+)
 async def chat_edit(request: ChatEditRequest) -> ChatEditResponse:
     """
     Process a natural language editing command.
@@ -43,6 +61,8 @@ async def chat_edit(request: ChatEditRequest) -> ChatEditResponse:
     - Cosmetic edits: "make it more cozy", "add plants"
     
     Returns updated layout and/or image based on edit type.
+    
+    TRACED: Full trace with command parsing and edit application.
     """
     try:
         editor = ChatEditor()

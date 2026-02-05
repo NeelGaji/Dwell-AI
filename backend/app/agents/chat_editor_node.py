@@ -4,14 +4,9 @@ Chat Editor Node
 Conversational image editing agent that allows natural language
 commands to modify the rendered room perspective.
 
-Supports surgical editing commands like:
-- "Move the desk to the left"
-- "Change the bed to face the window"
-- "Add a plant in the corner"
-- "Make the room feel more cozy"
+FULLY TRACED with LangSmith - including command parsing and image edits.
 """
 
-import os
 import json
 import base64
 import asyncio
@@ -22,14 +17,22 @@ from google.genai import types
 from app.models.state import AgentState
 from app.models.room import RoomObject, RoomDimensions
 
+# LangSmith tracing
+try:
+    from langsmith import traceable
+    LANGSMITH_ENABLED = True
+except ImportError:
+    LANGSMITH_ENABLED = False
+    def traceable(*args, **kwargs):
+        def decorator(func):
+            return func
+        return decorator
+
 
 class ChatEditor:
     """
     Conversational editing agent for room layouts and renders.
-    
-    Parses natural language editing commands and applies changes
-    either to the layout data (for structural edits) or to the
-    rendered image (for cosmetic edits).
+    All methods are traced with LangSmith.
     """
     
     def __init__(self):
@@ -41,10 +44,16 @@ class ChatEditor:
         if not api_key:
             raise ValueError("GOOGLE_API_KEY not set in .env file")
         self.client = genai.Client(api_key=api_key)
-        self.reasoning_model = settings.model_name  # For understanding commands
-        self.image_model = settings.image_model_name  # For image edits
+        self.reasoning_model = settings.model_name
+        self.image_model = settings.image_model_name
         self.edit_tool = EditImageTool()
-    
+
+    @traceable(
+        name="chat_editor.process_edit_command", 
+        run_type="chain", 
+        tags=["chat", "edit", "command"],
+        metadata={"description": "Process natural language edit command"}
+    )
     async def process_edit_command(
         self,
         command: str,
@@ -54,21 +63,9 @@ class ChatEditor:
     ) -> Dict[str, Any]:
         """
         Process a natural language editing command.
-        
-        Args:
-            command: Natural language edit command from user
-            current_layout: Current room layout
-            room_dims: Room dimensions
-            current_image_base64: Current rendered image (if available)
-            
-        Returns:
-            Dictionary with:
-                - edit_type: "layout" or "cosmetic"
-                - updated_layout: New layout if layout edit
-                - updated_image_base64: New image if cosmetic edit
-                - explanation: What was changed
+        TRACED: Full chain with command parsing and edit application.
         """
-        # First, classify the edit type
+        # First, classify the edit type (traced)
         edit_type, parsed_command = await self._parse_command(command, current_layout)
         
         if edit_type == "layout":
@@ -79,7 +76,7 @@ class ChatEditor:
             return {
                 "edit_type": "layout",
                 "updated_layout": updated_layout,
-                "updated_image_base64": None,  # Will need re-render
+                "updated_image_base64": None,
                 "explanation": explanation,
                 "needs_rerender": True
             }
@@ -91,7 +88,7 @@ class ChatEditor:
                 )
                 return {
                     "edit_type": "cosmetic",
-                    "updated_layout": current_layout,  # Unchanged
+                    "updated_layout": current_layout,
                     "updated_image_base64": updated_image,
                     "explanation": explanation,
                     "needs_rerender": False
@@ -104,7 +101,13 @@ class ChatEditor:
                     "explanation": "No rendered image available for cosmetic editing. Please generate a render first.",
                     "needs_rerender": True
                 }
-    
+
+    @traceable(
+        name="gemini_parse_command", 
+        run_type="llm", 
+        tags=["gemini", "chat", "parsing", "api-call"],
+        metadata={"model_type": "gemini-pro", "task": "command_parsing"}
+    )
     async def _parse_command(
         self, 
         command: str, 
@@ -112,9 +115,7 @@ class ChatEditor:
     ) -> Tuple[str, Dict[str, Any]]:
         """
         Parse natural language command into structured edit instruction.
-        
-        Returns:
-            Tuple of (edit_type, parsed_command_dict)
+        TRACED as an LLM call.
         """
         furniture_list = [{"id": obj.id, "label": obj.label} for obj in current_layout]
         
@@ -131,27 +132,23 @@ EDIT TYPES:
 1. "layout" - Commands that move, rotate, or reposition furniture
    Examples: "move desk to left", "rotate bed 90 degrees", "swap desk and dresser"
    
-2. "cosmetic" - Commands that change style, color, lighting, or add decorations
-   Examples: "make it more cozy", "add plants", "change lighting to evening", "paint walls blue"
+2. "cosmetic" - Commands that change appearance without moving furniture
+   Examples: "make it more cozy", "add plants", "change lighting", "make rug blue"
 
-Return JSON with this schema:
+Return JSON:
 {{
-  "edit_type": "layout" or "cosmetic",
-  "action": "move|rotate|swap|add|remove|change_style|change_color|change_lighting",
-  "target_object": "object_id or null",
-  "target_label": "object label if no ID matched",
+  "edit_type": "layout" | "cosmetic",
+  "action": "move" | "rotate" | "style" | "add" | "remove",
+  "target_object_id": "id or null",
   "parameters": {{
-    "direction": "left|right|up|down|null",
-    "distance": "small|medium|large|null",
-    "rotation": 0-360 or null,
-    "swap_with": "object_id or null",
-    "style": "description or null",
-    "color": "color or null"
+    "direction": "left|right|up|down" (for move),
+    "distance": "small|medium|large" (for move),
+    "rotation": 90 (degrees, for rotate),
+    "style_change": "description" (for cosmetic)
   }},
-  "natural_description": "What the user wants in plain English"
-}}
-"""
-        
+  "natural_description": "Human-readable description of the change"
+}}"""
+
         try:
             response = self.client.models.generate_content(
                 model=self.reasoning_model,
@@ -162,15 +159,17 @@ Return JSON with this schema:
             )
             
             parsed = json.loads(response.text)
-            return parsed.get("edit_type", "layout"), parsed
+            return parsed.get("edit_type", "cosmetic"), parsed
             
-        except Exception:
-            # Default to layout edit if parsing fails
-            return "layout", {
-                "action": "unknown",
+        except Exception as e:
+            # Default to cosmetic if parsing fails
+            return "cosmetic", {
+                "edit_type": "cosmetic",
+                "action": "style",
                 "natural_description": command
             }
-    
+
+    @traceable(name="apply_layout_edit", run_type="chain", tags=["edit", "layout"])
     async def _apply_layout_edit(
         self,
         parsed_command: Dict[str, Any],
@@ -178,28 +177,20 @@ Return JSON with this schema:
         room_dims: RoomDimensions
     ) -> Tuple[List[RoomObject], str]:
         """
-        Apply a layout modification based on parsed command.
-        
-        Returns:
-            Tuple of (updated_layout, explanation)
+        Apply a structural layout edit.
+        TRACED: Layout modification logic.
         """
-        action = parsed_command.get("action", "")
-        target_id = parsed_command.get("target_object")
-        target_label = parsed_command.get("target_label")
+        target_id = parsed_command.get("target_object_id")
+        action = parsed_command.get("action", "move")
         params = parsed_command.get("parameters", {})
         
         # Find target object
         target_obj = None
-        for obj in current_layout:
-            if target_id and obj.id == target_id:
-                target_obj = obj
-                break
-            elif target_label and obj.label.lower() == target_label.lower():
-                target_obj = obj
-                break
+        if target_id:
+            target_obj = next((o for o in current_layout if o.id == target_id), None)
         
         if not target_obj and action in ["move", "rotate"]:
-            return current_layout, f"Could not find the object to edit. Available objects: {[o.label for o in current_layout]}"
+            return current_layout, f"Could not find target object for edit. Available: {[o.label for o in current_layout]}"
         
         # Create updated layout
         updated_layout = []
@@ -237,7 +228,7 @@ Return JSON with this schema:
                 elif action == "rotate":
                     rotation = params.get("rotation", 90)
                     new_obj.orientation = (new_obj.orientation + rotation) % 360
-                    explanation = f"Rotated {obj.label} by {rotation} degrees (now facing {new_obj.orientation}°)"
+                    explanation = f"Rotated {obj.label} by {rotation} degrees (now facing {new_obj.orientation}deg)"
             
             updated_layout.append(new_obj)
         
@@ -245,22 +236,25 @@ Return JSON with this schema:
             explanation = f"Processed command: {parsed_command.get('natural_description', 'Unknown edit')}"
         
         return updated_layout, explanation
-    
+
+    @traceable(
+        name="gemini_image_edit", 
+        run_type="llm", 
+        tags=["gemini", "image", "edit", "api-call"],
+        metadata={"model_type": "gemini-image", "task": "cosmetic_edit"}
+    )
     async def _apply_image_edit(
         self,
         parsed_command: Dict[str, Any],
         current_image_base64: str
     ) -> Tuple[str, str]:
         """
-        Apply a cosmetic edit to the rendered image using EditImageTool.
-        
-        Returns:
-            Tuple of (new_image_base64, explanation)
+        Apply a cosmetic edit to the rendered image.
+        TRACED as an LLM/image-gen call.
         """
         edit_description = parsed_command.get("natural_description", "Apply the requested change")
         
         try:
-            # Delegate to EditImageTool
             new_image = await self.edit_tool.edit_image(
                 base_image=current_image_base64,
                 instruction=edit_description
@@ -271,24 +265,20 @@ Return JSON with this schema:
             return current_image_base64, f"Edit failed: {str(e)}"
 
 
+# LangGraph node functions
+
+@traceable(name="chat_editor_node", run_type="chain", tags=["langgraph", "node", "chat"])
 async def chat_editor_node(state: AgentState) -> Dict[str, Any]:
     """
     LangGraph node for conversational editing.
-    
-    Processes edit commands from the user and updates layout or image.
-    
-    Args:
-        state: Current agent state with edit_command
-        
-    Returns:
-        State updates with edited layout/image
+    TRACED: Full trace with command processing.
     """
     editor = ChatEditor()
     
     edit_command = state.get("edit_command", "")
     if not edit_command:
         return {
-            "explanation": "No edit command provided. Use natural language to describe changes like 'move the desk to the left' or 'make the room more cozy'."
+            "explanation": "No edit command provided. Use natural language to describe changes."
         }
     
     try:
@@ -321,17 +311,13 @@ async def chat_editor_node(state: AgentState) -> Dict[str, Any]:
 
 
 def chat_editor_node_sync(state: AgentState) -> Dict[str, Any]:
-    """
-    Synchronous wrapper for the chat editor node.
-    """
+    """Synchronous wrapper for LangGraph compatibility."""
     import asyncio
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
-        # No running loop, safe to use asyncio.run()
         return asyncio.run(chat_editor_node(state))
     else:
-        # Already in an async context, run in new thread
         import concurrent.futures
         with concurrent.futures.ThreadPoolExecutor() as pool:
             future = pool.submit(asyncio.run, chat_editor_node(state))
