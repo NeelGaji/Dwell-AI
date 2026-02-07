@@ -5,6 +5,11 @@ Conversational image editing agent that allows natural language
 commands to modify the rendered room perspective.
 
 FULLY TRACED with LangSmith - including command parsing and image edits.
+
+EDIT TYPES:
+- layout: move, rotate, reposition furniture (modifies bbox data)
+- cosmetic: change colors, lighting, style (edits image directly)
+- replace: swap one furniture for another at the EXACT same position
 """
 
 import json
@@ -80,6 +85,27 @@ class ChatEditor:
                 "explanation": explanation,
                 "needs_rerender": True
             }
+        elif edit_type == "replace":
+            # Furniture replacement - remove old, add new at same position
+            if current_image_base64:
+                updated_image, explanation = await self._apply_replace_edit(
+                    parsed_command, current_image_base64
+                )
+                return {
+                    "edit_type": "cosmetic",
+                    "updated_layout": current_layout,
+                    "updated_image_base64": updated_image,
+                    "explanation": explanation,
+                    "needs_rerender": False
+                }
+            else:
+                return {
+                    "edit_type": "error",
+                    "updated_layout": current_layout,
+                    "updated_image_base64": None,
+                    "explanation": "No rendered image available. Please generate a perspective view first.",
+                    "needs_rerender": True
+                }
         else:
             # Cosmetic edit - modify the image directly
             if current_image_base64:
@@ -130,21 +156,29 @@ Classify this command and parse it into a structured format.
 
 EDIT TYPES:
 1. "layout" - Commands that move, rotate, or reposition furniture
-   Examples: "move desk to left", "rotate bed 90 degrees", "swap desk and dresser"
+   Examples: "move desk to left", "rotate bed 90 degrees", "swap desk and dresser positions"
    
-2. "cosmetic" - Commands that change appearance without moving furniture
-   Examples: "make it more cozy", "add plants", "change lighting", "make rug blue"
+2. "cosmetic" - Commands that change appearance without moving or replacing furniture
+   Examples: "make it more cozy", "change lighting", "make rug blue", "add plants"
+
+3. "replace" - Commands that replace/swap/change one piece of furniture INTO a different type of furniture
+   Examples: "change the table into a workdesk", "replace the sofa with an armchair",
+             "turn the chair into a bean bag", "swap the nightstand for a bookshelf",
+             "make the desk a standing desk", "convert the table to a dining table"
+   KEY: The user wants the OLD furniture REMOVED and a NEW different furniture placed at the EXACT SAME position.
 
 Return JSON:
 {{
-  "edit_type": "layout" | "cosmetic",
-  "action": "move" | "rotate" | "style" | "add" | "remove",
-  "target_object_id": "id or null",
+  "edit_type": "layout" | "cosmetic" | "replace",
+  "action": "move" | "rotate" | "style" | "add" | "remove" | "replace",
+  "target_object_id": "id of the furniture being acted on, or null",
   "parameters": {{
     "direction": "left|right|up|down" (for move),
     "distance": "small|medium|large" (for move),
     "rotation": 90 (degrees, for rotate),
-    "style_change": "description" (for cosmetic)
+    "style_change": "description" (for cosmetic),
+    "old_furniture": "what the current furniture is" (for replace),
+    "new_furniture": "what it should become" (for replace)
   }},
   "natural_description": "Human-readable description of the change"
 }}"""
@@ -236,6 +270,92 @@ Return JSON:
             explanation = f"Processed command: {parsed_command.get('natural_description', 'Unknown edit')}"
         
         return updated_layout, explanation
+
+    @traceable(
+        name="apply_replace_edit",
+        run_type="llm",
+        tags=["gemini", "image", "edit", "replace", "api-call"],
+        metadata={"model_type": "gemini-image", "task": "furniture_replacement"}
+    )
+    async def _apply_replace_edit(
+        self,
+        parsed_command: Dict[str, Any],
+        current_image_base64: str
+    ) -> Tuple[str, str]:
+        """
+        Replace one piece of furniture with another at the EXACT same position.
+        
+        The image model is instructed to:
+        1. Identify the old furniture in the image
+        2. Remove it completely
+        3. Place the new furniture at the exact same location, same size footprint
+        4. Keep everything else untouched
+        
+        TRACED as an LLM/image-gen call.
+        """
+        params = parsed_command.get("parameters", {})
+        old_furniture = params.get("old_furniture", "furniture")
+        new_furniture = params.get("new_furniture", "furniture")
+        target_id = parsed_command.get("target_object_id", "")
+        description = parsed_command.get("natural_description", f"Replace {old_furniture} with {new_furniture}")
+
+        prompt = f"""Edit this interior room photograph. Replace one piece of furniture with another.
+
+TASK: Replace the {old_furniture} with a {new_furniture}.
+
+═══════════════════════════════════════════════════════════════
+  ⛔ CRITICAL POSITION RULES — MUST FOLLOW EXACTLY
+═══════════════════════════════════════════════════════════════
+  1. Find the {old_furniture} in the image.
+  2. COMPLETELY REMOVE the {old_furniture} from that spot.
+  3. Place a {new_furniture} at the EXACT SAME POSITION and
+     EXACT SAME SIZE as where the {old_furniture} was.
+  4. The {new_furniture} must occupy the same footprint —
+     same location, same approximate dimensions.
+  5. Do NOT move the new furniture to a different spot.
+  6. Do NOT change anything else in the room.
+═══════════════════════════════════════════════════════════════
+
+REQUIREMENTS:
+- The {new_furniture} must look realistic and match the room's style.
+- Maintain photorealistic quality — same lighting, shadows, perspective.
+- Keep the same camera angle exactly.
+- Preserve all other furniture, walls, floor, and decorations.
+- The ONLY change should be: {old_furniture} → {new_furniture} at the same spot.
+
+Generate the edited room photograph."""
+
+        try:
+            if "," in current_image_base64:
+                current_image_base64 = current_image_base64.split(",")[1]
+
+            image_data = base64.b64decode(current_image_base64)
+
+            response = await asyncio.to_thread(
+                self.client.models.generate_content,
+                model=self.image_model,
+                contents=[
+                    types.Part.from_bytes(data=image_data, mime_type="image/png"),
+                    prompt
+                ],
+                config=types.GenerateContentConfig(
+                    response_modalities=["image", "text"],
+                    temperature=0.2,
+                )
+            )
+
+            if (response.candidates
+                    and response.candidates[0].content
+                    and response.candidates[0].content.parts):
+                for part in response.candidates[0].content.parts:
+                    if hasattr(part, 'inline_data') and part.inline_data:
+                        new_image = base64.b64encode(part.inline_data.data).decode('utf-8')
+                        return new_image, f"Replaced {old_furniture} with {new_furniture} at the same position."
+
+            return current_image_base64, f"Could not generate replacement image. The model returned no image."
+
+        except Exception as e:
+            return current_image_base64, f"Replace edit failed: {str(e)}"
 
     @traceable(
         name="gemini_image_edit", 

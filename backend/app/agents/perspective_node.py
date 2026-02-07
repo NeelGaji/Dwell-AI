@@ -3,6 +3,10 @@ Perspective Node
 
 Generates photorealistic 3D perspective views of room layouts.
 FULLY TRACED with LangSmith - including Gemini image generation calls.
+
+Approach: Pass ONLY the layout image to Gemini with a short prompt
+telling it to convert the top-down view into an eye-level photograph.
+No furniture position text — the image contains all the info needed.
 """
 
 import base64
@@ -49,6 +53,7 @@ def _save_debug_json(filename: str, data: Any):
     except Exception as e:
         print(f"[Perspective] Failed to save debug {filename}: {e}")
 
+
 class PerspectiveGenerator:
     """
     Generates photorealistic perspective renders of room layouts.
@@ -79,34 +84,13 @@ class PerspectiveGenerator:
         layout_plan: Optional[dict] = None,
     ) -> str:
         """
-        Generate a photorealistic side/perspective view of the room.
+        Generate a photorealistic perspective view from a layout image.
         
-        NOTE: image_base64 is passed to Gemini so it can see the actual
-        room's visual identity (wall colors, flooring, furniture styles).
-        The prompt strictly instructs it to change the camera angle from
-        top-down to eye-level while preserving the room's appearance.
-        
-        TRACED: Full chain with Gemini image generation details.
+        The layout image already contains all furniture positions visually.
+        We pass ONLY the image + a short prompt to avoid confusing Gemini
+        with text positions that might contradict what it sees.
         """
-        # Build furniture descriptions from layout_plan if available,
-        # otherwise fall back to bbox-based descriptions
-        if layout_plan and layout_plan.get("furniture_placement"):
-            furniture_lines = []
-            for furn_id, placement_desc in layout_plan["furniture_placement"].items():
-                furniture_lines.append(f"- {furn_id}: {placement_desc}")
-            furniture_text = "\n".join(furniture_lines)
-        else:
-            furniture_descriptions = [
-                self._describe_object(obj, room_dims)
-                for obj in layout
-                if obj.type.value == "movable"
-            ]
-            furniture_text = "\n".join(furniture_descriptions)
-        
-        # Build the generation prompt
-        prompt = self._build_perspective_prompt(
-            furniture_text, room_dims, style, view_angle, lighting
-        )
+        prompt = self._build_perspective_prompt(room_dims, style, view_angle, lighting)
         
         # Debug logging
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -115,13 +99,13 @@ class PerspectiveGenerator:
             "layout_count": len(layout),
             "room_dims": room_dims.dict(),
             "style": style,
-            "has_layout_plan": layout_plan is not None,
+            "has_image": image_base64 is not None,
         })
 
+        if not image_base64:
+            raise RuntimeError("No layout image provided for perspective generation.")
+
         try:
-            # Pass the layout thumbnail so Gemini can see the actual room
-            # (wall colors, floor, windows, furniture styles).
-            # The prompt strictly overrides the camera angle.
             result = await self._call_gemini_image_generation(prompt, image_base64)
             print(f"[Perspective] Generation successful")
             return result
@@ -136,20 +120,19 @@ class PerspectiveGenerator:
         tags=["gemini", "image", "perspective", "api-call"],
         metadata={"model_type": "gemini-image", "task": "perspective_generation"}
     )
-    async def _call_gemini_image_generation(self, prompt: str, image_base64: Optional[str] = None) -> str:
+    async def _call_gemini_image_generation(self, prompt: str, image_base64: str) -> str:
         """
         Make the Gemini image generation API call.
-        TRACED as an LLM/image-gen call.
+        Image is always required for perspective generation.
         """
-        contents = [prompt]
-        if image_base64:
-             if "," in image_base64:
-                 image_base64 = image_base64.split(",")[1]
-             try:
-                 image_data = base64.b64decode(image_base64)
-                 contents.insert(0, types.Part.from_bytes(data=image_data, mime_type="image/png"))
-             except Exception as e:
-                 print(f"[Perspective] Failed to decode input image: {e}")
+        if "," in image_base64:
+            image_base64 = image_base64.split(",")[1]
+
+        image_data = base64.b64decode(image_base64)
+        contents = [
+            types.Part.from_bytes(data=image_data, mime_type="image/png"),
+            prompt
+        ]
 
         response = await asyncio.to_thread(
             self.client.models.generate_content,
@@ -161,119 +144,34 @@ class PerspectiveGenerator:
             )
         )
         
-        # Extract image from response
-        for part in response.candidates[0].content.parts:
-            if hasattr(part, 'inline_data') and part.inline_data:
-                image_data = part.inline_data.data
-                return base64.b64encode(image_data).decode('utf-8')
+        if (response.candidates
+                and response.candidates[0].content
+                and response.candidates[0].content.parts):
+            for part in response.candidates[0].content.parts:
+                if hasattr(part, 'inline_data') and part.inline_data:
+                    return base64.b64encode(part.inline_data.data).decode('utf-8')
         
         raise RuntimeError("No image generated in response")
 
     def _build_perspective_prompt(
         self,
-        furniture_text: str,
         room_dims: RoomDimensions,
         style: str,
         view_angle: str,
         lighting: str
     ) -> str:
-        """Build the prompt for perspective generation."""
-        return f"""You are a professional architectural photographer. You have been given a 2D floor plan image as a REFERENCE for the room's appearance — its wall colors, flooring, window positions, and furniture styles.
+        """Build a short, focused prompt. The image does the heavy lifting."""
+        return f"""Convert this 2D top-down floor plan into a photorealistic EYE-LEVEL photograph of the same room.
 
-Your job: produce a PHOTOREALISTIC PHOTOGRAPH of this SAME room, but shot from INSIDE the room at EYE LEVEL.
+RULES:
+1. Keep ALL furniture exactly as shown in the floor plan — same items, same positions.
+2. Camera: eye-level (5 feet high), standing at the {view_angle}/doorway, looking across the room.
+3. Output MUST show walls, floor with perspective depth, and ceiling.
+4. DO NOT produce another top-down or bird's-eye view.
 
-═══════════════════════════════════════════════════════════════
-  ⛔ ABSOLUTE HARD RULES — VIOLATION = AUTOMATIC REJECTION
-═══════════════════════════════════════════════════════════════
-  1. The output MUST be a FIRST-PERSON EYE-LEVEL photograph.
-  2. Camera height: exactly 5 feet (1.5 m) above the floor.
-  3. Camera angle: HORIZONTAL. The lens faces STRAIGHT AHEAD,
-     parallel to the floor. NOT tilted down, NOT looking down.
-  4. You MUST see WALLS in the image — left wall, right wall,
-     and the far wall. Walls MUST be visible and vertical.
-  5. You MUST see the FLOOR in the bottom portion of the image,
-     receding into the distance with perspective.
-  6. You MUST see the CEILING (or ceiling edge) at the top.
-  7. Furniture must appear IN PERSPECTIVE — items closer to the
-     camera are larger, items farther away are smaller.
-  8. There must be a clear VANISHING POINT in the image.
+Room: ~{room_dims.width_estimate:.0f} x {room_dims.height_estimate:.0f} ft, 9ft ceiling, {style} style, {lighting}.
 
-  ⛔ FORBIDDEN OUTPUTS (will be rejected):
-  - Any top-down / bird's-eye / overhead / map view
-  - Any isometric or axonometric projection
-  - Any 2D floor plan or blueprint style
-  - Any view where the camera looks DOWN at the floor
-  - Any output that copies the camera angle of the input image
-═══════════════════════════════════════════════════════════════
-
-HOW TO USE THE INPUT IMAGE:
-- The attached image is a 2D top-down floor plan.
-- Use it ONLY to understand: wall colors, floor material, window
-  locations, and what the furniture looks like.
-- DO NOT copy its camera angle. The input is top-down. Your output
-  MUST be eye-level. These are completely different viewpoints.
-- Imagine you WALKED INTO this room and took a photo with your
-  phone held at eye height. THAT is what you must generate.
-
-ROOM:
-- Dimensions: approximately {room_dims.width_estimate:.0f} x {room_dims.height_estimate:.0f} feet
-- Ceiling height: 9 feet
-- Style: {style}
-- Lighting: {lighting}
-
-FURNITURE POSITIONS:
-{furniture_text}
-
-CAMERA:
-- Position: Standing at the {view_angle} entrance/doorway, one step inside
-- Height: Eye-level (5 feet / 1.5m above floor)
-- Direction: Looking across toward the opposite wall
-- Lens: 35mm standard
-
-REQUIRED IN THE OUTPUT:
-✓ Vertical walls converging toward a vanishing point
-✓ Floor in the lower third with perspective depth
-✓ Ceiling edge visible at top
-✓ 3D furniture with volume, shadows, materials
-✓ Near objects larger, far objects smaller
-✓ Realistic interior lighting
-
-QUALITY: Photorealistic, professional interior design photography.
-
-Generate the photograph now."""
-
-    def _describe_object(
-        self,
-        obj: RoomObject,
-        room_dims: RoomDimensions
-    ) -> str:
-        """Generate natural language description of object position."""
-        x_pct = obj.bbox[0]
-        y_pct = obj.bbox[1]
-        
-        # Determine position in room
-        x_pos = "left" if x_pct < 33 else ("center" if x_pct < 66 else "right")
-        y_pos = "front" if y_pct < 33 else ("middle" if y_pct < 66 else "back")
-        
-        # Orientation description
-        orientation_map = {
-            0: "facing north (away from viewer)", 
-            90: "facing east (to the right)",
-            180: "facing south (toward viewer)", 
-            270: "facing west (to the left)"
-        }
-        orientation_desc = orientation_map.get(obj.orientation, "")
-        
-        # Material description
-        material = f" made of {obj.material_hint}" if obj.material_hint else ""
-        
-        # Build description
-        desc = f"- {obj.label.title()}{material} positioned in the {y_pos}-{x_pos} area of the room"
-        
-        if obj.label in ['bed', 'desk', 'sofa', 'chair'] and orientation_desc:
-            desc += f", {orientation_desc}"
-        
-        return desc
+Generate a photorealistic interior photograph from eye-level."""
 
 
 # LangGraph node functions
@@ -282,7 +180,6 @@ Generate the photograph now."""
 async def perspective_node(state: AgentState) -> Dict[str, Any]:
     """
     LangGraph node that generates perspective renders.
-    TRACED: Full trace with image generation details.
     """
     generator = PerspectiveGenerator()
     
@@ -290,7 +187,6 @@ async def perspective_node(state: AgentState) -> Dict[str, Any]:
         layout = state.get("proposed_layout") or state.get("current_layout", [])
         room_dims = state["room_dimensions"]
         
-        # Generate the main perspective view
         image_base64 = await generator.generate_side_view(
             layout=layout,
             room_dims=room_dims,
