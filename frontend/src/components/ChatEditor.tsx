@@ -49,7 +49,7 @@ export function ChatEditor({
     const suggestedCommands = [
         'Move the bed to the left',
         'Rotate the desk 90 degrees',
-        'Make the room more cozy',
+        'Remove the nightstand',
         'Add a plant in the corner',
     ];
 
@@ -124,8 +124,8 @@ export function ChatEditor({
                             >
                                 <div
                                     className={`max-w-[80%] p-3 rounded-2xl ${msg.role === 'user'
-                                            ? 'bg-[#6b7aa1] text-white'
-                                            : 'bg-[#f5f3f0] text-gray-800'
+                                        ? 'bg-[#6b7aa1] text-white'
+                                        : 'bg-[#f5f3f0] text-gray-800'
                                         }`}
                                 >
                                     <p className="text-sm">{msg.content}</p>

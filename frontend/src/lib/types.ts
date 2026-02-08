@@ -119,7 +119,7 @@ export interface ChatEditRequest {
 }
 
 export interface ChatEditResponse {
-  edit_type: 'layout' | 'cosmetic' | 'error';
+  edit_type: 'layout' | 'cosmetic' | 'replace' | 'remove';
   updated_layout: RoomObject[];
   updated_image_base64: string | null;
   explanation: string;

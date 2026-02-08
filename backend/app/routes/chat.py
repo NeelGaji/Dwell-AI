@@ -38,7 +38,7 @@ class ChatEditRequest(BaseModel):
 
 class ChatEditResponse(BaseModel):
     """Response from chat edit endpoint."""
-    edit_type: str  # 'layout', 'cosmetic', or 'error'
+    edit_type: str  # 'layout', 'cosmetic', 'replace', 'remove', or 'error'
     updated_layout: List[RoomObject]
     updated_image_base64: Optional[str] = None
     explanation: str
@@ -59,6 +59,7 @@ async def chat_edit(request: ChatEditRequest) -> ChatEditResponse:
     Commands can be:
     - Layout edits: "move desk to the left", "rotate bed 90 degrees"
     - Cosmetic edits: "make it more cozy", "add plants"
+    - Remove edits: "remove the desk", "get rid of the nightstand"
     
     Returns updated layout and/or image based on edit type.
     

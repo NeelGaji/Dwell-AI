@@ -10,6 +10,7 @@ EDIT TYPES:
 - layout: move, rotate, reposition furniture (modifies bbox data)
 - cosmetic: change colors, lighting, style (edits image directly)
 - replace: swap one furniture for another at the EXACT same position
+- remove: delete a piece of furniture from layout and image
 """
 
 import json
@@ -84,6 +85,25 @@ class ChatEditor:
                 "updated_image_base64": None,
                 "explanation": explanation,
                 "needs_rerender": True
+            }
+        elif edit_type == "remove":
+            # Remove object from layout AND erase from image
+            updated_layout, removed_label, explanation = await self._apply_remove_edit(
+                parsed_command, current_layout
+            )
+            # Also edit the image to visually erase the object
+            updated_image = None
+            if current_image_base64 and removed_label:
+                updated_image, img_explanation = await self._apply_remove_from_image(
+                    removed_label, current_image_base64
+                )
+                explanation += f" {img_explanation}"
+            return {
+                "edit_type": "remove",
+                "updated_layout": updated_layout,
+                "updated_image_base64": updated_image,
+                "explanation": explanation,
+                "needs_rerender": updated_image is None and removed_label is not None
             }
         elif edit_type == "replace":
             # Furniture replacement - remove old, add new at same position
@@ -167,9 +187,17 @@ EDIT TYPES:
              "make the desk a standing desk", "convert the table to a dining table"
    KEY: The user wants the OLD furniture REMOVED and a NEW different furniture placed at the EXACT SAME position.
 
+4. "remove" - Commands that DELETE/REMOVE a piece of furniture entirely from the room
+   Examples: "remove the desk", "delete the rug", "get rid of the nightstand",
+             "take out the lamp", "I don't want the dresser", "remove chair_1",
+             "clear the coffee table", "take away the plant"
+   KEY: The user wants a specific object COMPLETELY GONE from the room — not replaced, not moved, just removed.
+   IMPORTANT: For remove, you MUST set target_object_id to the matching furniture id from the list above.
+   If the user says a label like "desk", find the matching id (e.g. "desk_1") from the furniture list.
+
 Return JSON:
 {{
-  "edit_type": "layout" | "cosmetic" | "replace",
+  "edit_type": "layout" | "cosmetic" | "replace" | "remove",
   "action": "move" | "rotate" | "style" | "add" | "remove" | "replace",
   "target_object_id": "id of the furniture being acted on, or null",
   "parameters": {{
@@ -271,6 +299,129 @@ Return JSON:
         
         return updated_layout, explanation
 
+    # ========================================================================
+    # REMOVE EDIT — remove object from layout data
+    # ========================================================================
+    @traceable(name="apply_remove_edit", run_type="chain", tags=["edit", "remove"])
+    async def _apply_remove_edit(
+        self,
+        parsed_command: Dict[str, Any],
+        current_layout: List[RoomObject],
+    ) -> Tuple[List[RoomObject], Optional[str], str]:
+        """
+        Remove a furniture item from the layout.
+
+        Returns:
+            (updated_layout, removed_object_label_or_None, explanation)
+        """
+        target_id = parsed_command.get("target_object_id")
+
+        # Try to find the target object
+        target_obj = None
+        if target_id:
+            target_obj = next((o for o in current_layout if o.id == target_id), None)
+
+        # Fallback: try matching by label from natural_description
+        if not target_obj:
+            desc = parsed_command.get("natural_description", "").lower()
+            for obj in current_layout:
+                if obj.label.lower() in desc or obj.id.lower() in desc:
+                    target_obj = obj
+                    break
+
+        if not target_obj:
+            available = [f"{o.id} ({o.label})" for o in current_layout if o.type.value == "movable"]
+            return (
+                current_layout,
+                None,
+                f"Could not find the object to remove. Available movable objects: {', '.join(available)}"
+            )
+
+        # Prevent removing structural objects
+        if target_obj.type.value == "structural":
+            return (
+                current_layout,
+                None,
+                f"Cannot remove {target_obj.label} ({target_obj.id}) — it is a structural element "
+                f"(door, window, wall, fixture). Only movable furniture can be removed."
+            )
+
+        # Filter out the target object
+        updated_layout = [o for o in current_layout if o.id != target_obj.id]
+        removed_label = target_obj.label
+        explanation = f"Removed {removed_label} ({target_obj.id}) from the room."
+
+        return updated_layout, removed_label, explanation
+
+    # ========================================================================
+    # REMOVE FROM IMAGE — erase the object visually using Gemini
+    # ========================================================================
+    @traceable(
+        name="apply_remove_from_image",
+        run_type="llm",
+        tags=["gemini", "image", "edit", "remove", "api-call"],
+        metadata={"model_type": "gemini-image", "task": "object_removal"}
+    )
+    async def _apply_remove_from_image(
+        self,
+        removed_label: str,
+        current_image_base64: str
+    ) -> Tuple[str, str]:
+        """
+        Remove an object from the rendered image using Gemini image editing.
+        The area where the object was is filled with appropriate floor/background.
+
+        TRACED as an LLM/image-gen call.
+        """
+        prompt = f"""Edit this interior room photograph. Remove a piece of furniture.
+
+TASK: Completely remove the {removed_label} from this room image.
+
+CRITICAL RULES:
+1. Find the {removed_label} in the image and ERASE it entirely.
+2. Fill the area where the {removed_label} was with the appropriate background:
+   - If it was on the floor, show the floor surface (wood, tile, carpet, etc.)
+   - If it was against a wall, show the wall behind it.
+   - Blend seamlessly with the surrounding area — no artifacts, no outlines.
+3. Do NOT move, resize, or alter any OTHER furniture or objects.
+4. Maintain the same camera angle, lighting, shadows, and perspective.
+5. Maintain photorealistic quality throughout.
+6. The result should look as if the {removed_label} was never there.
+
+Generate the edited room photograph with the {removed_label} removed."""
+
+        try:
+            if "," in current_image_base64:
+                current_image_base64 = current_image_base64.split(",")[1]
+
+            image_data = base64.b64decode(current_image_base64)
+
+            response = await asyncio.to_thread(
+                self.client.models.generate_content,
+                model=self.image_model,
+                contents=[
+                    types.Part.from_bytes(data=image_data, mime_type="image/png"),
+                    prompt
+                ],
+                config=types.GenerateContentConfig(
+                    response_modalities=["image", "text"],
+                    temperature=0.2,
+                )
+            )
+
+            if (response.candidates
+                    and response.candidates[0].content
+                    and response.candidates[0].content.parts):
+                for part in response.candidates[0].content.parts:
+                    if hasattr(part, 'inline_data') and part.inline_data:
+                        new_image = base64.b64encode(part.inline_data.data).decode('utf-8')
+                        return new_image, f"Visually erased the {removed_label} from the image."
+
+            return current_image_base64, f"Could not erase {removed_label} from image — model returned no image."
+
+        except Exception as e:
+            return current_image_base64, f"Image removal failed: {str(e)}"
+
     @traceable(
         name="apply_replace_edit",
         run_type="llm",
@@ -284,7 +435,6 @@ Return JSON:
     ) -> Tuple[str, str]:
         """
         Replace one piece of furniture with another at the EXACT same position.
-        
         The image model is instructed to:
         1. Identify the old furniture in the image
         2. Remove it completely
@@ -303,18 +453,15 @@ Return JSON:
 
 TASK: Replace the {old_furniture} with a {new_furniture}.
 
-═══════════════════════════════════════════════════════════════
+╔══════════════════════════════════════════════════════════════╗
   ⛔ CRITICAL POSITION RULES — MUST FOLLOW EXACTLY
-═══════════════════════════════════════════════════════════════
+╚══════════════════════════════════════════════════════════════╝
   1. Find the {old_furniture} in the image.
   2. COMPLETELY REMOVE the {old_furniture} from that spot.
-  3. Place a {new_furniture} at the EXACT SAME POSITION and
-     EXACT SAME SIZE as where the {old_furniture} was.
-  4. The {new_furniture} must occupy the same footprint —
-     same location, same approximate dimensions.
-  5. Do NOT move the new furniture to a different spot.
-  6. Do NOT change anything else in the room.
-═══════════════════════════════════════════════════════════════
+  3. Place a {new_furniture} at the EXACT SAME POSITION as the {old_furniture}.
+  4. Do NOT move the new furniture to a different spot.
+  5. Do NOT change anything else in the room.
+╔══════════════════════════════════════════════════════════════╗
 
 REQUIREMENTS:
 - The {new_furniture} must look realistic and match the room's style.
@@ -414,7 +561,7 @@ async def chat_editor_node(state: AgentState) -> Dict[str, Any]:
             "should_continue": result.get("needs_rerender", False)
         }
         
-        if result["edit_type"] == "layout" and result["updated_layout"]:
+        if result["edit_type"] in ("layout", "remove") and result["updated_layout"]:
             updates["current_layout"] = result["updated_layout"]
             updates["proposed_layout"] = result["updated_layout"]
         

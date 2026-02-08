@@ -185,6 +185,8 @@ CAMERA SETUP (NON-NEGOTIABLE):
 - Angle: 0° tilt (Horizontal). Look straight ahead across the room.
 - Lens: 16-24mm Wide Angle.
 - Focus: The furniture and far wall.
+- SPECIAL CASE: If there are walls on either side of the entry doorway , place camera a few feet away from the doorway.
+
 
 CRITICAL RULES:
 1. VIEWPOINT: This MUST be an IMMERSIVE INTERIOR VIEW.
@@ -195,14 +197,15 @@ CRITICAL RULES:
    - If the floor plan looks like a map, your output must look like a PHOTO taken FROM WITHIN that map.
 
 2. STRUCTURAL ACCURACY:
-   - {door_txt}
-   - {window_txt}
+   - Door can be found in the position: {door_txt}
    - Ceiling and Floor must be visible and parallel (2-point perspective).
+   - CRITICAL: Do NOT Generate extra furnitures ,stairs or walls that are not present in the layout.
+   - CRITICAL: Any solid line must be treated as room dividing walls and must not be moved. The walls must be complete and connected to ceiling and floor.
 
 3. CONTENT FIDELITY:
-   - Include EVERY piece of furniture from the plan.
-   - Place them and orient themEXACTLY as shown in the layout relative to the walls.
-   - Do NOT move any furniture orthe kitchen or bathroom fixtures.
+   - Include EVERY piece of furniture from the plan and do not move them from their original positions.
+   - Place them and orient them EXACTLY as shown in the layout relative to the walls.
+   - CRITICAL: Do NOT move or reorient the kitchen area or bathroom area fixtures.
    - Style: {style}.
    - Lighting: {lighting}.
 
