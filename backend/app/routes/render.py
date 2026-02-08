@@ -13,7 +13,7 @@ from typing import List, Optional
 import asyncio
 
 from app.models.room import RoomObject, RoomDimensions
-from app.models.api import RenderRequest, RenderResponse
+from app.models.api import RenderRequest, RenderResponse, PerspectiveRequest, PerspectiveResponse
 from app.tools.edit_image import EditImageTool
 from app.agents.perspective_node import PerspectiveGenerator
 
@@ -32,36 +32,7 @@ except ImportError:
 router = APIRouter(prefix="/render", tags=["Rendering"])
 
 
-# === Request/Response Models ===
 
-class RenderRequest(BaseModel):
-    """Request body for render endpoint."""
-    original_image_base64: str
-    final_layout: List[RoomObject]
-    original_layout: List[RoomObject]
-
-
-class RenderResponse(BaseModel):
-    """Response from render endpoint."""
-    image_url: Optional[str] = None
-    image_base64: Optional[str] = None
-    message: str
-
-
-class PerspectiveRequest(BaseModel):
-    """Request body for perspective generation."""
-    layout: List[RoomObject]
-    room_dimensions: RoomDimensions
-    style: str = "modern"
-    view_angle: str = "corner"
-    image_base64: Optional[str] = None  # Context image (layout thumbnail)
-    layout_plan: Optional[dict] = None  # Semantic placement plan from designer
-
-
-class PerspectiveResponse(BaseModel):
-    """Response from perspective generation."""
-    image_base64: Optional[str] = None
-    message: str
 
 
 # === Endpoints ===
@@ -81,13 +52,14 @@ async def generate_perspective(request: PerspectiveRequest) -> PerspectiveRespon
         generator = PerspectiveGenerator()
         
         image_base64 = await generator.generate_side_view(
-            layout=request.layout,
             room_dims=request.room_dimensions,
             style=request.style,
             view_angle=request.view_angle,
             lighting="natural daylight",
             image_base64=request.image_base64,
             layout_plan=request.layout_plan,
+            door_info=request.door_info,
+            window_info=request.window_info,
         )
         
         return PerspectiveResponse(

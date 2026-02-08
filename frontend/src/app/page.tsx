@@ -187,8 +187,11 @@ export default function PocketPlannerApp() {
           layout: variation.layout,
           room_dimensions: state.roomDimensions,
           style: 'modern',
+          view_angle: 'entrance',
           image_base64: variation.thumbnail_base64 || undefined,
           layout_plan: variation.layout_plan || undefined,
+          door_info: variation.door_info || undefined,
+          window_info: variation.window_info || undefined,
         });
 
         setState(prev => ({

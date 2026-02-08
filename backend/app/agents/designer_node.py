@@ -252,7 +252,7 @@ class InteriorDesignerAgent:
             variations.append({
                 "name": sp["name"], "style_key": sk,
                 "description": plan.get("description", sp["description"]),
-                "layout": current_layout, "layout_plan": plan,
+                "layout": current_layout, "layout_plan": plan, "door_info": door_info, "window_info": window_info,
                 "thumbnail_base64": img,
             })
 
@@ -742,7 +742,7 @@ Edit the floor plan now."""
             response = await asyncio.to_thread(
                 self.client.models.generate_content, model=self.image_model,
                 contents=[types.Part.from_bytes(data=image_data, mime_type="image/jpeg"), prompt],
-                config=types.GenerateContentConfig(response_modalities=["IMAGE", "TEXT"], temperature=0.3)
+                config=types.GenerateContentConfig(response_modalities=["IMAGE", "TEXT"], temperature=0.35)
             )
             # Null-safe response handling
             if (response.candidates

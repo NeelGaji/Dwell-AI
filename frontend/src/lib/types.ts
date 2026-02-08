@@ -59,6 +59,8 @@ export interface LayoutVariation {
   layout: RoomObject[];
   layout_plan?: Record<string, any> | null; // Semantic placement plan from Gemini
   thumbnail_base64?: string | null;
+  door_info?: Record<string, any> | null;
+  window_info?: Record<string, any> | null;
 }
 
 export interface OptimizeResponse {
@@ -132,6 +134,8 @@ export interface PerspectiveRequest {
   view_angle?: string;
   image_base64?: string;
   layout_plan?: Record<string, any> | null;
+  door_info?: Record<string, any> | null;
+  window_info?: Record<string, any> | null;
 }
 
 export interface PerspectiveResponse {

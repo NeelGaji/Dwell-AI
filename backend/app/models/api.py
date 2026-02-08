@@ -49,6 +49,8 @@ class LayoutVariation(BaseModel):
     layout: List[RoomObject] = Field(..., description="The furniture arrangement for this variation")
     layout_plan: Optional[dict] = Field(None, description="Semantic layout plan with furniture_placement instructions from Gemini")
     thumbnail_base64: Optional[str] = Field(None, description="Preview render of this layout")
+    door_info: Optional[dict] = Field(None, description="Detected door information")
+    window_info: Optional[dict] = Field(None, description="Detected or inferred window information")
 
 
 class OptimizeResponse(BaseModel):
@@ -70,6 +72,31 @@ class RenderRequest(BaseModel):
     original_image_base64: str = Field(..., description="Original room photo")
     final_layout: List[RoomObject] = Field(..., description="Target furniture positions")
     original_layout: List[RoomObject] = Field(..., description="Original positions for diff")
+
+
+class RenderResponse(BaseModel):
+    """Response from /render endpoint."""
+    image_url: Optional[str] = Field(None, description="URL to rendered image")
+    image_base64: Optional[str] = Field(None, description="Rendered image as base64")
+    message: str = "Render complete"
+
+
+class PerspectiveRequest(BaseModel):
+    """Request body for perspective generation."""
+    layout: List[RoomObject]
+    room_dimensions: RoomDimensions
+    style: str = "modern"
+    view_angle: str = "corner"
+    image_base64: Optional[str] = Field(None, description="Context image (layout thumbnail)")
+    layout_plan: Optional[dict] = Field(None, description="Semantic placement plan from designer")
+    door_info: Optional[dict] = Field(None, description="Detected door information")
+    window_info: Optional[dict] = Field(None, description="Detected or inferred window information")
+
+
+class PerspectiveResponse(BaseModel):
+    """Response from perspective generation."""
+    image_base64: Optional[str] = None
+    message: str
 
 
 class RenderResponse(BaseModel):

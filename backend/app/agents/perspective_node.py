@@ -75,13 +75,14 @@ class PerspectiveGenerator:
     )
     async def generate_side_view(
         self,
-        layout: List[RoomObject],
         room_dims: RoomDimensions,
         style: str = "modern",
-        view_angle: str = "corner",
+        view_angle: str = "entrance",
         lighting: str = "natural daylight",
         image_base64: Optional[str] = None,
         layout_plan: Optional[dict] = None,
+        door_info: Optional[dict] = None,
+        window_info: Optional[dict] = None,
     ) -> str:
         """
         Generate a photorealistic perspective view from a layout image.
@@ -90,16 +91,17 @@ class PerspectiveGenerator:
         We pass ONLY the image + a short prompt to avoid confusing Gemini
         with text positions that might contradict what it sees.
         """
-        prompt = self._build_perspective_prompt(room_dims, style, view_angle, lighting)
+        prompt = self._build_perspective_prompt(room_dims, style, view_angle, lighting, door_info, window_info)
         
         # Debug logging
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         _save_debug_json(f"{timestamp}_perspective_INPUT.json", {
             "prompt": prompt,
-            "layout_count": len(layout),
             "room_dims": room_dims.dict(),
             "style": style,
             "has_image": image_base64 is not None,
+            "door_info": door_info,
+            "window_info": window_info,
         })
 
         if not image_base64:
@@ -140,7 +142,7 @@ class PerspectiveGenerator:
             contents=contents,
             config=types.GenerateContentConfig(
                 response_modalities=["image", "text"],
-                temperature=0.3,
+                temperature=0.4,
             )
         )
         
@@ -158,20 +160,55 @@ class PerspectiveGenerator:
         room_dims: RoomDimensions,
         style: str,
         view_angle: str,
-        lighting: str
+        lighting: str,
+        door_info: Optional[dict],
+        window_info: Optional[dict]
     ) -> str:
         """Build a short, focused prompt. The image does the heavy lifting."""
-        return f"""Convert this 2D top-down floor plan into a photorealistic EYE-LEVEL photograph of the same room.
+        
+        door_txt = ""
+        if door_info:
+            d_wall = door_info.get("wall", "unknown")
+            door_txt = f"The entry DOOR is on the {d_wall} wall."
+            
+        window_txt = ""
+        if window_info:
+            w_wall = window_info.get("wall", "unknown")
+            window_txt = f"Windows are on the {w_wall} wall."
+            
+        return f"""ROLE: You are an architectural photographer.
+TASK: Create a photorealistic EYE-LEVEL interior photograph based on this floor plan.
 
-RULES:
-1. Keep ALL furniture exactly as shown in the floor plan — same items, same positions.
-2. Camera: eye-level (5 feet high), standing at the {view_angle}/doorway, looking across the room.
-3. Output MUST show walls, floor with perspective depth, and ceiling.
-4. DO NOT produce another top-down or bird's-eye view.
+CAMERA SETUP (NON-NEGOTIABLE):
+- Position: Standing on the floor inside the room at the {view_angle}.
+- Height: 5 feet (1.5 meters) exactly.
+- Angle: 0° tilt (Horizontal). Look straight ahead across the room.
+- Lens: 16-24mm Wide Angle.
+- Focus: The furniture and far wall.
 
-Room: ~{room_dims.width_estimate:.0f} x {room_dims.height_estimate:.0f} ft, 9ft ceiling, {style} style, {lighting}.
+CRITICAL RULES:
+1. VIEWPOINT: This MUST be an IMMERSIVE INTERIOR VIEW.
+   - NO top-down views.
+   - NO isometric views.
+   - NO birds-eye views.
+   - NO ceiling-down views.
+   - If the floor plan looks like a map, your output must look like a PHOTO taken FROM WITHIN that map.
 
-Generate a photorealistic interior photograph from eye-level."""
+2. STRUCTURAL ACCURACY:
+   - {door_txt}
+   - {window_txt}
+   - Ceiling and Floor must be visible and parallel (2-point perspective).
+
+3. CONTENT FIDELITY:
+   - Include EVERY piece of furniture from the plan.
+   - Place them EXACTLY as shown relative to the walls.
+   - Do NOT move the kitchen or bathroom fixtures.
+   - Style: {style}.
+   - Lighting: {lighting}.
+
+Room Dimensions: ~{room_dims.width_estimate:.0f} x {room_dims.height_estimate:.0f} ft, 9ft ceiling.
+
+Generate the eye-level interior photograph now."""
 
 
 # LangGraph node functions
@@ -188,7 +225,6 @@ async def perspective_node(state: AgentState) -> Dict[str, Any]:
         room_dims = state["room_dimensions"]
         
         image_base64 = await generator.generate_side_view(
-            layout=layout,
             room_dims=room_dims,
             style="modern",
             view_angle="corner",
