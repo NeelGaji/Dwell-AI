@@ -150,7 +150,7 @@ class VisionAgent:
             raise ValueError("GOOGLE_API_KEY environment variable is not set")
         self.client = genai.Client(api_key=settings.google_api_key)
         # Use flash model — much faster, avoids cold-start timeouts
-        self.model = settings.model_name
+        self.model = settings.vision_model_name
 
     @traceable(name="vision_agent.analyze_room", run_type="chain", tags=["vision", "gemini"])
     async def analyze_room(self, image_base64: str) -> VisionOutput:

@@ -50,8 +50,8 @@ class ChatEditor:
         if not api_key:
             raise ValueError("GOOGLE_API_KEY not set in .env file")
         self.client = genai.Client(api_key=api_key)
-        self.reasoning_model = settings.model_name
-        self.image_model = settings.image_model_name
+        self.reasoning_model = settings.planning_model_name
+        self.image_model = settings.render_image_model_name
         self.edit_tool = EditImageTool()
 
     @traceable(

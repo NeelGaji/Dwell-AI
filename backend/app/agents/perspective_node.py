@@ -65,7 +65,7 @@ class PerspectiveGenerator:
         if not settings.google_api_key:
             raise ValueError("GOOGLE_API_KEY not set")
         self.client = genai.Client(api_key=settings.google_api_key)
-        self.image_model = settings.image_model_name
+        self.image_model = settings.render_image_model_name
 
 
     @traceable(

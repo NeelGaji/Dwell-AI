@@ -137,8 +137,8 @@ class InteriorDesignerAgent:
         if not settings.google_api_key:
             raise ValueError("GOOGLE_API_KEY not set")
         self.client = genai.Client(api_key=settings.google_api_key)
-        self.model = settings.model_name
-        self.image_model = settings.image_model_name
+        self.model = settings.planning_model_name
+        self.image_model = settings.layout_image_model_name
 
     # ========================================================================
     # MAIN ENTRY POINT

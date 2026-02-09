@@ -31,8 +31,14 @@ class Settings(BaseSettings):
     
     # Google AI
     google_api_key: str = ""
-    model_name: str = "gemini-2.5-pro"
-    image_model_name: str = "gemini-2.5-flash-image"
+    # Vision Analysis (highest reasoning for pixels)
+    vision_model_name: str = "gemini-3-pro-preview"
+    # Logic/Planning (generating & validating JSON plans)
+    planning_model_name: str = "gemini-2.5-pro"
+    # Layout Image Generation (image editing for top-down)
+    layout_image_model_name: str = "gemini-3-pro-image-preview"
+    # Perspective & Chat Image Generation (fast image generation/editing)
+    render_image_model_name: str = "gemini-2.5-flash-image"
     
     # LangSmith Tracing
     langchain_tracing_v2: bool = True
