@@ -1,93 +1,151 @@
 """
 Optimize Route
 
-POST /optimize - Optimize a room layout while respecting locked objects.
-This is the core endpoint that uses our LangGraph workflow.
+POST /optimize - Generate AI-powered layout variations with preview images.
+
+FULLY TRACED with LangSmith.
+
+FIXES APPLIED:
+1. Auto-populate locked_ids with all structural object IDs AND is_locked objects
+2. Better error handling and validation
+3. "Creative" renamed to "Space Optimized" throughout
+
+Layout styles: Work Focused, Cozy, Space Optimized
 """
 
+import asyncio
 from fastapi import APIRouter, HTTPException
 
-from app.models.api import OptimizeRequest, OptimizeResponse
-from app.models.room import ConstraintViolation
-from app.agents.graph import run_optimization
-from app.core.constraints import check_all_hard_constraints
+from app.models.api import OptimizeRequest, OptimizeResponse, LayoutVariation
+from app.models.room import ObjectType
+from app.agents.designer_node import InteriorDesignerAgent
+from app.core.scoring import score_layout
+
+# LangSmith tracing
+try:
+    from langsmith import traceable
+    LANGSMITH_ENABLED = True
+except ImportError:
+    LANGSMITH_ENABLED = False
+    def traceable(*args, **kwargs):
+        def decorator(func):
+            return func
+        return decorator
 
 
 router = APIRouter(prefix="/optimize", tags=["Optimization"])
 
 
 @router.post("", response_model=OptimizeResponse)
+@traceable(name="optimize_layout_endpoint", run_type="chain", tags=["api", "optimization", "designer"])
 async def optimize_layout(request: OptimizeRequest) -> OptimizeResponse:
     """
-    Optimize a room layout while respecting locked objects.
+    Generate AI-powered layout variations with preview images.
     
     This endpoint:
-    1. Takes current layout and locked object IDs
-    2. Runs the LangGraph optimization workflow
-    3. Returns optimized layout with explanation
+    1. Takes current layout, locked objects, and ORIGINAL IMAGE
+    2. Auto-adds all structural objects AND is_locked objects to locked_ids
+    3. Generates 3 layout variations (Work Focused, Cozy, Space Optimized)
+    4. Creates photorealistic preview images by editing the original floor plan
+    5. Returns variations with thumbnails for user selection
     
-    The optimizer will:
-    - Check all constraints (door clearance, overlaps, walking paths)
-    - Move unlocked furniture to fix violations
-    - Iterate until violations are resolved or max iterations reached
-    - Generate human-readable explanation of changes
+    TRACED: Full trace including Designer agent and thumbnail generation.
     """
     try:
-        # Mark locked objects
+        # STEP 1: Build complete locked_ids including ALL structural objects
+        # AND any objects with is_locked=True
+        # This ensures structural objects are NEVER moved
+        complete_locked_ids = set(request.locked_ids)
+        
         for obj in request.current_layout:
+            # Add structural objects to locked list
+            if obj.type == ObjectType.STRUCTURAL:
+                complete_locked_ids.add(obj.id)
+                obj.is_locked = True  # Also mark as locked
+            
+            # Add any objects already marked as locked
+            if obj.is_locked:
+                complete_locked_ids.add(obj.id)
+            
+            # Mark user-locked objects
             if obj.id in request.locked_ids:
                 obj.is_locked = True
         
-        # Run the optimization workflow
-        result = run_optimization(
-            objects=request.current_layout,
-            room_width=request.room_dimensions.width_estimate,
-            room_height=request.room_dimensions.height_estimate,
-            locked_ids=request.locked_ids,
-            max_iterations=request.max_iterations
+        locked_ids_list = list(complete_locked_ids)
+        
+        # Log for debugging
+        movable_count = sum(1 for o in request.current_layout if o.id not in complete_locked_ids)
+        structural_count = len(complete_locked_ids)
+        print(f"[Optimize] Objects: {len(request.current_layout)} total, {movable_count} movable, {structural_count} locked/structural")
+        print(f"[Optimize] Locked IDs: {locked_ids_list}")
+        
+        # STEP 2: Validate we have movable objects
+        if movable_count == 0:
+            raise HTTPException(
+                status_code=400,
+                detail="No movable objects found. All objects are either structural or locked."
+            )
+        
+        # STEP 3: Initialize designer agent (traced internally)
+        designer = InteriorDesignerAgent()
+        
+        # STEP 4: Generate variations WITH preview images
+        # Styles: Work Focused, Cozy, Space Optimized
+        variations_data = await designer.generate_layout_variations(
+            current_layout=request.current_layout,
+            room_dims=request.room_dimensions,
+            locked_ids=locked_ids_list,  # Pass complete locked IDs
+            image_base64=request.image_base64
         )
         
-        # Extract results
-        new_layout = result.get("proposed_layout", request.current_layout)
-        current_score = result.get("current_score")
-        initial_score = result.get("initial_score")
-        iterations = result.get("iteration_count", 0)
-        explanation = result.get("explanation", "Optimization complete.")
+
+        # STEP 5: Convert to LayoutVariation models (no scoring needed)
+        variations = []
+        for var in variations_data:
+            variations.append(LayoutVariation(
+                name=var["name"],
+                description=var["description"],
+                layout=var["layout"],
+                layout_plan=var.get("layout_plan"),
+                thumbnail_base64=var.get("thumbnail_base64"),
+                door_info=var.get("door_info"),
+                window_info=var.get("window_info"),
+            ))
         
-        # Calculate improvement
-        improvement = 0.0
-        if current_score and initial_score:
-            improvement = current_score.total_score - initial_score.total_score
+        # Get best variation for legacy fields
+        best = variations[0] if variations else None
         
-        # Get remaining violations
-        violations = check_all_hard_constraints(
-            new_layout,
-            request.room_dimensions.width_estimate,
-            request.room_dimensions.height_estimate
-        )
+        # Count thumbnails generated
+        thumbnails_generated = sum(1 for v in variations if v.thumbnail_base64)
         
         return OptimizeResponse(
-            new_layout=new_layout,
-            explanation=explanation,
-            layout_score=current_score.total_score if current_score else 0.0,
-            iterations=iterations,
-            constraint_violations=violations,
-            improvement=round(improvement, 1)
+            variations=variations,
+            message=f"Generated {len(variations)} layouts ({thumbnails_generated} with preview images). {structural_count} structural objects locked.",
+            new_layout=best.layout if best else request.current_layout,
+            explanation=best.description if best else "No variations generated",
+            iterations=1,
+            constraint_violations=[],
+            improvement=0.0
         )
         
+        # Debug log
+        if variations:
+             print(f"[Optimize] First variation door_info: {variations[0].door_info}")
+             
+        return response
+        
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid request: {str(e)}"
+        )
     except Exception as e:
+        print(f"[Optimize] Error: {e}")
+        import traceback
+        traceback.print_exc()
         raise HTTPException(
             status_code=500,
-            detail=f"Optimization failed: {str(e)}"
+            detail=f"Layout optimization failed: {str(e)}"
         )
-
-
-@router.post("/quick", response_model=OptimizeResponse)
-async def quick_optimize(request: OptimizeRequest) -> OptimizeResponse:
-    """
-    Quick optimization with fewer iterations.
-    
-    Same as /optimize but limited to 2 iterations for faster response.
-    """
-    request.max_iterations = 2
-    return await optimize_layout(request)

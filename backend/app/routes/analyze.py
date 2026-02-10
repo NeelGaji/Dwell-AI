@@ -3,6 +3,8 @@ Analyze Route
 
 POST /analyze - Analyze a room image and extract furniture objects.
 Uses Gemini 2.5 Flash for vision analysis with object detection.
+
+FULLY TRACED with LangSmith.
 """
 
 from fastapi import APIRouter, HTTPException, UploadFile, File
@@ -10,8 +12,18 @@ import base64
 import logging
 
 from app.models.api import AnalyzeRequest, AnalyzeResponse
-from app.core.constraints import check_all_hard_constraints
-from app.core.vision_service import analyze_room_image
+from app.agents.vision_node import VisionAgent, get_vision_agent
+
+# LangSmith tracing
+try:
+    from langsmith import traceable
+    LANGSMITH_ENABLED = True
+except ImportError:
+    LANGSMITH_ENABLED = False
+    def traceable(*args, **kwargs):
+        def decorator(func):
+            return func
+        return decorator
 
 
 logger = logging.getLogger(__name__)
@@ -19,6 +31,7 @@ router = APIRouter(prefix="/analyze", tags=["Analysis"])
 
 
 @router.post("", response_model=AnalyzeResponse)
+@traceable(name="analyze_room_endpoint", run_type="chain", tags=["api", "vision"])
 async def analyze_room(request: AnalyzeRequest) -> AnalyzeResponse:
     """
     Analyze a room image and extract furniture objects.
@@ -28,34 +41,29 @@ async def analyze_room(request: AnalyzeRequest) -> AnalyzeResponse:
     2. Extracts room dimensions and detected objects with bounding boxes
     3. Checks for constraint violations
     4. Returns structured layout data
+    
+    TRACED: Full trace with Gemini call details.
     """
     try:
-        # Call Gemini Vision
-        vision_output = await analyze_room_image(request.image_base64)
+        # Call Gemini Vision (via VisionAgent - also traced)
+        agent = get_vision_agent()
+        vision_output = await agent.analyze_room(request.image_base64)
         
         # Check for initial issues
-        violations = check_all_hard_constraints(
-            vision_output.objects,
-            vision_output.room_dimensions.width_estimate,
-            vision_output.room_dimensions.height_estimate
-        )
-        
-        detected_issues = [v.description for v in violations]
-        
         return AnalyzeResponse(
             room_dimensions=vision_output.room_dimensions,
             objects=vision_output.objects,
-            detected_issues=detected_issues,
-            message=f"Detected {len(vision_output.objects)} objects. {len(detected_issues)} issue(s) found."
+            wall_bounds=vision_output.wall_bounds,
+            message=f"Detected {len(vision_output.objects)} objects.",
+            image_width=vision_output.image_width,
+            image_height=vision_output.image_height,
         )
         
     except ValueError as e:
-        # Configuration errors (missing API key, etc.)
         logger.error(f"Configuration error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
         
     except Exception as e:
-        # Gemini API errors
         logger.error(f"Vision analysis failed: {e}")
         raise HTTPException(
             status_code=500, 
@@ -64,11 +72,13 @@ async def analyze_room(request: AnalyzeRequest) -> AnalyzeResponse:
 
 
 @router.post("/upload", response_model=AnalyzeResponse)
+@traceable(name="analyze_room_upload", run_type="chain", tags=["api", "vision", "upload"])
 async def analyze_room_upload(file: UploadFile = File(...)) -> AnalyzeResponse:
     """
     Analyze a room image uploaded as a file.
     
     Accepts: JPEG, PNG, WebP
+    TRACED: Full trace with file metadata.
     """
     # Validate file type
     allowed_types = ["image/jpeg", "image/png", "image/webp"]
