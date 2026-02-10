@@ -4,7 +4,7 @@ import os
 import asyncio
 from typing import Literal, Dict, Any
 from langgraph.graph import StateGraph, END
-
+from app.agents.vision_node import vision_node
 from app.models.state import AgentState, create_initial_state
 from app.models.room import RoomObject, RoomDimensions
 from app.agents.designer_node import designer_node_sync
